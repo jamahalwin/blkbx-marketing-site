@@ -1,0 +1,7 @@
+node_modules/
+.env
+data/events.jsonl
+data/leads.jsonl
+data/reservations.jsonl
+npm-debug.log*
+.DS_Store
