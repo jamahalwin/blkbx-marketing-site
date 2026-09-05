@@ -2,16 +2,12 @@ require('dotenv').config();
 
 const express = require('express');
 const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
+const store = require('./store');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
-const DATA_DIR = path.join(__dirname, 'data');
 const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
-
-fs.mkdirSync(DATA_DIR, { recursive: true });
 
 app.disable('x-powered-by');
 app.use(express.json({ limit: '32kb' }));
@@ -36,27 +32,6 @@ function validEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function record(file, payload) {
-  const line = JSON.stringify({
-    id: crypto.randomUUID(),
-    at: new Date().toISOString(),
-    ...payload
-  }) + '\n';
-  fs.appendFileSync(path.join(DATA_DIR, file), line, 'utf8');
-}
-
-function readJsonl(file) {
-  const filename = path.join(DATA_DIR, file);
-  if (!fs.existsSync(filename)) return [];
-  return fs.readFileSync(filename, 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .map(line => {
-      try { return JSON.parse(line); } catch { return null; }
-    })
-    .filter(Boolean);
-}
-
 function context(req) {
   const body = req.body || {};
   return {
@@ -71,30 +46,40 @@ function context(req) {
   };
 }
 
-app.post('/api/event', (req, res) => {
+app.post('/api/event', async (req, res) => {
   const event = clean(req.body.event, 50);
   const allowed = new Set(['page_view', 'view_product', 'reserve_click', 'waitlist_open', 'waitlist_submit']);
   if (!allowed.has(event)) return res.status(400).json({ ok: false });
-  record('events.jsonl', { event, ...context(req) });
-  res.json({ ok: true });
+  try {
+    await store.recordEvent({ event, ...context(req) });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[store] event write failed', error);
+    res.status(500).json({ ok: false });
+  }
 });
 
-app.post('/api/waitlist', (req, res) => {
+app.post('/api/waitlist', async (req, res) => {
   const email = clean(req.body.email, 180).toLowerCase();
   const zip = clean(req.body.zip, 12);
   const product = clean(req.body.product, 40);
   if (!validEmail(email)) return res.status(400).json({ ok: false, message: 'Enter a valid email address.' });
   if (product && !PRODUCTS[product]) return res.status(400).json({ ok: false, message: 'Unknown collection.' });
 
-  record('leads.jsonl', {
-    email,
-    zip,
-    product: product || 'general',
-    intent: clean(req.body.intent, 40) || 'waitlist',
-    ...context(req)
-  });
-  record('events.jsonl', { event: 'waitlist_submit', product: product || 'general', ...context(req) });
-  res.json({ ok: true, message: "You're on the private launch list." });
+  try {
+    await store.recordLead({
+      email,
+      zip,
+      product: product || 'general',
+      intent: clean(req.body.intent, 40) || 'waitlist',
+      ...context(req)
+    });
+    await store.recordEvent({ event: 'waitlist_submit', product: product || 'general', ...context(req) });
+    res.json({ ok: true, message: "You're on the private launch list." });
+  } catch (error) {
+    console.error('[store] lead write failed', error);
+    res.status(500).json({ ok: false, message: 'We could not save that. Please try again.' });
+  }
 });
 
 app.post('/api/reserve', async (req, res) => {
@@ -116,8 +101,13 @@ app.post('/api/reserve', async (req, res) => {
     ...context(req)
   };
 
-  record('reservations.jsonl', reservation);
-  record('events.jsonl', { event: 'reserve_click', product: productKey, ...context(req) });
+  try {
+    await store.recordReservation(reservation);
+    await store.recordEvent({ event: 'reserve_click', product: productKey, ...context(req) });
+  } catch (error) {
+    console.error('[store] reservation write failed', error);
+    return res.status(500).json({ ok: false, message: 'We could not save that. Please try again.' });
+  }
 
   if (!stripe) {
     return res.json({
@@ -153,43 +143,40 @@ app.post('/api/reserve', async (req, res) => {
   }
 });
 
-app.get('/api/metrics', (req, res) => {
+app.get('/api/metrics', async (req, res) => {
   const token = clean(req.query.token, 300);
   if (!process.env.ADMIN_TOKEN || token !== process.env.ADMIN_TOKEN) return res.status(401).json({ ok: false });
 
-  const events = readJsonl('events.jsonl');
-  const leads = readJsonl('leads.jsonl');
-  const reservations = readJsonl('reservations.jsonl');
-  const byProduct = {};
-  for (const key of Object.keys(PRODUCTS)) {
-    byProduct[key] = { views: 0, reserveClicks: 0, leads: 0, reservations: 0 };
+  try {
+    const metrics = await store.metrics(Object.keys(PRODUCTS));
+    res.json({ ok: true, storage: store.name, ...metrics });
+  } catch (error) {
+    console.error('[store] metrics read failed', error);
+    res.status(500).json({ ok: false });
   }
-  for (const e of events) {
-    if (!byProduct[e.product]) continue;
-    if (e.event === 'view_product') byProduct[e.product].views += 1;
-    if (e.event === 'reserve_click') byProduct[e.product].reserveClicks += 1;
-  }
-  for (const l of leads) if (byProduct[l.product]) byProduct[l.product].leads += 1;
-  for (const r of reservations) if (byProduct[r.product]) byProduct[r.product].reservations += 1;
-
-  res.json({
-    ok: true,
-    startedAt: events[0]?.at || null,
-    totals: {
-      pageViews: events.filter(e => e.event === 'page_view').length,
-      productViews: events.filter(e => e.event === 'view_product').length,
-      leads: leads.length,
-      reservationIntents: reservations.length
-    },
-    byProduct
-  });
 });
 
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'blkbx-fake-door' }));
+let storageReady = false;
+
+app.get('/health', (_req, res) => res.json({
+  ok: true,
+  service: 'blkbx-fake-door',
+  storage: store.name,
+  storageReady
+}));
 
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-app.listen(PORT, () => {
-  console.log(`BLKBX listening on ${PORT}`);
-  console.log(`Payment mode: ${stripe ? 'Stripe enabled' : 'intent-only'}`);
+// Start the listener either way: a storage outage should not take the site
+// down, but it must be visible at /health rather than silently losing signups.
+store.init().then(() => {
+  storageReady = true;
+}).catch(error => {
+  console.error(`[store] ${store.name} init FAILED - the site is up but recording nothing`, error);
+}).finally(() => {
+  app.listen(PORT, () => {
+    console.log(`BLKBX listening on ${PORT}`);
+    console.log(`Storage: ${store.name}${storageReady ? '' : ' (UNAVAILABLE)'}`);
+    console.log(`Payment mode: ${stripe ? 'Stripe enabled' : 'intent-only'}`);
+  });
 });

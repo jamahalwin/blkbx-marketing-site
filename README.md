@@ -75,13 +75,32 @@ It returns totals and per-product counts. Keep this URL private.
 
 ## Data storage
 
-For the 30-day MVP, events are stored as JSON Lines under `data/`:
+The app picks its backend from the environment at startup, via `store.js`:
 
-- `events.jsonl`
-- `leads.jsonl`
-- `reservations.jsonl`
+| Backend | When it is used | Durable? |
+| --- | --- | --- |
+| MySQL | `DB_HOST` (or `DATABASE_URL`) is set | Yes |
+| JSON Lines under `data/` | neither is set | **No** on managed hosts |
 
-This intentionally avoids a database/native Node modules and makes GoDaddy deployment simpler. Back up the `data/` directory during the test. For a longer-lived production app, move this to Postgres or another managed database.
+`/health` reports which one is active and whether it connected:
+
+```json
+{ "ok": true, "service": "blkbx-fake-door", "storage": "mysql", "storageReady": true }
+```
+
+If `storageReady` is `false`, the site is serving pages but **recording nothing** — check the app logs.
+
+### Why the database is required in production
+
+GoDaddy Node.js Hosting replaces the application directory on every deployment. Anything written to `data/` is destroyed by the next deploy, silently. Their docs suggest `/public/assets/` for files that must persist — **do not put leads there**: that directory is served publicly by `express.static`, so the waitlist would be downloadable at `https://blkbx.co/assets/leads.jsonl` by anyone.
+
+Use the provisioned MySQL instance instead. Nothing needs to be configured: when the hosted database is attached, GoDaddy injects `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` into both runtimes automatically, and `store.js` reads those names directly. The tables (`events`, `leads`, `reservations`) are created on first boot.
+
+`ADMIN_TOKEN` is the one secret you must still add yourself, under **Settings -> Secrets**, or `/api/metrics` stays locked at 401.
+
+Note that the preview and published environments share one database, so test traffic against a preview URL lands in the same tables as live traffic. Use a recognizable test email so you can exclude those rows later.
+
+The JSON Lines path remains the default for local development, so `npm start` works with no database running.
 
 ## Suggested 30-day decision rule
 
