@@ -162,7 +162,11 @@ app.get('/health', (_req, res) => res.json({
   ok: true,
   service: 'blkbx-fake-door',
   storage: store.name,
-  storageReady
+  storageReady,
+  // Whether the metrics secret reached this runtime at all - never its value.
+  // Without this, a missing ADMIN_TOKEN and a mistyped one both look like 401.
+  adminTokenSet: Boolean(process.env.ADMIN_TOKEN),
+  adminTokenLength: process.env.ADMIN_TOKEN ? process.env.ADMIN_TOKEN.length : 0
 }));
 
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
