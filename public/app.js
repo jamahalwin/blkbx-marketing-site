@@ -39,6 +39,17 @@ async function post(url, body) {
 }
 function event(name, product='') { post('/api/event', { event: name, product }).catch(() => {}); }
 
+// Meta Pixel. These are installed by /pixel.js and are no-ops when no pixel is
+// configured, so every call site below is safe without a guard.
+const track = (name, params, options) => (window.metaTrack || (() => {}))(name, params, options);
+const trackCustom = (name, params) => (window.metaTrackCustom || (() => {}))(name, params);
+// PRODUCTS stores price as the display string, so derive the number from it
+// rather than storing the same figure twice and letting the two drift apart.
+const priceValue = key => Number(String(PRODUCTS[key]?.price || '').replace(/[^0-9.]/g, '')) || 0;
+// The refundable reservation deposit in dollars, mirroring PRODUCTS[*].deposit
+// on the server.
+const DEPOSIT = 10;
+
 event('page_view');
 document.getElementById('year').textContent = new Date().getFullYear();
 
@@ -61,6 +72,12 @@ function openProduct(key) {
   document.getElementById('productPrice').textContent = p.price;
   document.getElementById('productContents').innerHTML = p.contents.map(x => `<li>${x}</li>`).join('');
   setOpen(productModal, true); event('view_product', key);
+  // Valued at target retail, not the $10 deposit: this measures interest in the
+  // product, which is what the ad creative is selling.
+  track('ViewContent', {
+    content_ids: [key], content_type: 'product', content_name: p.name,
+    content_category: p.occasion, value: priceValue(key), currency: 'USD'
+  });
 }
 function openLead(product='', reserve=false) {
   setOpen(productModal, false); currentProduct = product;
@@ -71,6 +88,20 @@ function openLead(product='', reserve=false) {
   document.getElementById('leadForm').dataset.reserve = reserve ? '1' : '0';
   document.getElementById('leadStatus').textContent = '';
   setOpen(leadModal, true); event('waitlist_open', product);
+  if (reserve) {
+    // Fired as the reservation modal opens rather than on submit, because the
+    // submit handler redirects straight to Stripe and the navigation can cut
+    // the beacon off before it is sent.
+    track('InitiateCheckout', {
+      content_ids: product ? [product] : [], content_type: 'product',
+      content_name: PRODUCTS[product]?.name || '', num_items: 1,
+      value: DEPOSIT, currency: 'USD'
+    });
+  } else {
+    // Not a Meta standard event - kept custom so it can be read as a funnel
+    // step without being mistaken for a conversion.
+    trackCustom('WaitlistOpen', { content_ids: product ? [product] : [] });
+  }
 }
 
 document.querySelectorAll('[data-view-product]').forEach(el => el.addEventListener('click', () => openProduct(el.dataset.viewProduct)));
@@ -94,6 +125,12 @@ document.getElementById('leadForm').addEventListener('submit', async (e) => {
     } else {
       const data = await post('/api/waitlist', { ...fields, intent: 'waitlist' });
       status.textContent = data.message; submit.textContent = 'You’re on the list';
+      // No value: a waitlist signup has not been priced, and inventing a figure
+      // would corrupt the ROAS comparison against real reservations.
+      track('Lead', {
+        content_name: PRODUCTS[fields.product]?.name || 'General waitlist',
+        content_category: 'waitlist'
+      });
     }
   } catch (err) {
     status.textContent = err.message; submit.disabled = false; submit.textContent = reserve ? 'Continue to reservation' : 'Join private launch';
@@ -101,6 +138,18 @@ document.getElementById('leadForm').addEventListener('submit', async (e) => {
 });
 
 if (qs.get('reserved')) {
+  // Stripe returns the visitor here after a completed reservation. Passing the
+  // Checkout session id as the Meta event id lets Meta discard duplicates, so a
+  // refresh, a back-navigation, or a shared success URL cannot inflate the
+  // count that the go/no-go decision rests on.
+  const reservedProduct = qs.get('reserved');
+  const sessionId = qs.get('session_id');
+  track('Purchase', {
+    content_ids: [reservedProduct], content_type: 'product',
+    content_name: PRODUCTS[reservedProduct]?.name || reservedProduct, num_items: 1,
+    value: DEPOSIT, currency: 'USD'
+  }, sessionId ? { eventID: `reserve_${sessionId}` } : undefined);
+
   setTimeout(() => openLead('', false), 600);
   document.getElementById('leadTitle').textContent = 'Reservation received.';
   document.getElementById('leadIntro').textContent = 'You now have priority access to the BLKBX private launch. We will follow up before production.';

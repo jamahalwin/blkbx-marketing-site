@@ -63,6 +63,58 @@ Typical cPanel flow:
 
 The server uses `process.env.PORT`, which is compatible with managed Node environments that inject a port. Do not hardcode port 80/443.
 
+## Meta Pixel
+
+Set your numeric pixel ID from Events Manager and restart:
+
+```text
+META_PIXEL_ID=123456789012345
+```
+
+Leave it unset and the pixel is disabled entirely, which is the default for local
+development. `/health` reports `"metaPixel": "enabled"` or `"disabled"` so a
+silently untracked ad campaign is visible without opening the browser.
+
+The ID is served to the browser by `/config.js` rather than hardcoded in
+`index.html`, so the same build can point at a test pixel locally and the real
+one in production.
+
+### Event mapping
+
+Meta standard events are fired alongside the site's own `/api/event` records:
+
+| Site action | Meta event | Value |
+| --- | --- | --- |
+| Page load | `PageView` | — |
+| Product modal opened | `ViewContent` | target retail ($129–$159) |
+| Waitlist modal opened | `WaitlistOpen` (custom) | — |
+| Reserve modal opened | `InitiateCheckout` | $10 |
+| Waitlist submitted | `Lead` | — |
+| Returned from Stripe with `?reserved=` | `Purchase` | $10 |
+
+`ViewContent` is valued at target retail because that is what the ad creative
+sells; `InitiateCheckout` and `Purchase` carry the $10 deposit, which is the
+money that actually moves. `Lead` is deliberately unvalued — pricing a waitlist
+signup would corrupt any ROAS comparison against real reservations.
+
+`Purchase` sends the Stripe Checkout session id as the Meta `eventID`, so a
+refresh, a back-navigation, or a shared success URL cannot inflate the count the
+go/no-go decision rests on.
+
+### Known gaps
+
+- **No `<noscript>` fallback.** The standard Meta snippet includes a tracking
+  pixel image for visitors without JavaScript. It needs the ID inlined in HTML,
+  which the environment-driven setup cannot do. No real signal is lost: every
+  conversion on this site runs through JavaScript modals anyway.
+- **Browser-only.** Ad blockers and iOS App Tracking Transparency typically
+  suppress 10–30% of browser events. The Conversions API would recover those by
+  also sending from `server.js`, which already records every one of these
+  actions. Worth adding before scaling spend.
+- **No consent banner.** The pixel fires immediately for every visitor. That is
+  a deliberate choice for a US-targeted test; restrict ad targeting to the US, or
+  add consent gating before running EU/UK traffic.
+
 ## View experiment metrics
 
 Set a long random value for `ADMIN_TOKEN`, then visit:

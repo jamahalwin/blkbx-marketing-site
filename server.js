@@ -9,6 +9,17 @@ const PORT = Number(process.env.PORT || 3000);
 const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
 
+// The Meta Pixel ID is not a secret - it ships to every browser that loads the
+// site - but it does differ per environment, so it comes from the environment
+// rather than being hardcoded into the static HTML.
+const RAW_PIXEL_ID = String(process.env.META_PIXEL_ID || '').trim();
+// Pixel IDs are numeric. Rejecting anything else keeps a mistyped env var from
+// becoming a script-injection vector when it is interpolated into /config.js.
+const META_PIXEL_ID = /^\d{6,20}$/.test(RAW_PIXEL_ID) ? RAW_PIXEL_ID : '';
+if (RAW_PIXEL_ID && !META_PIXEL_ID) {
+  console.warn('[meta] META_PIXEL_ID is not a numeric pixel ID - the pixel is disabled');
+}
+
 app.disable('x-powered-by');
 app.use(express.json({ limit: '32kb' }));
 app.use(express.urlencoded({ extended: false }));
@@ -156,6 +167,14 @@ app.get('/api/metrics', async (req, res) => {
   }
 });
 
+// Public runtime configuration for the browser. Must stay ahead of the catch-all
+// route below, which would otherwise answer with index.html.
+app.get('/config.js', (_req, res) => {
+  res.type('application/javascript');
+  res.set('Cache-Control', 'public, max-age=300');
+  res.send(`window.BLKBX_CONFIG=${JSON.stringify({ metaPixelId: META_PIXEL_ID })};`);
+});
+
 let storageReady = false;
 
 app.get('/health', (_req, res) => res.json({
@@ -166,7 +185,10 @@ app.get('/health', (_req, res) => res.json({
   // Whether the metrics secret reached this runtime at all - never its value.
   // Without this, a missing ADMIN_TOKEN and a mistyped one both look like 401.
   adminTokenSet: Boolean(process.env.ADMIN_TOKEN),
-  adminTokenLength: process.env.ADMIN_TOKEN ? process.env.ADMIN_TOKEN.length : 0
+  adminTokenLength: process.env.ADMIN_TOKEN ? process.env.ADMIN_TOKEN.length : 0,
+  // A silently disabled pixel means an ad spend with no measurable conversions,
+  // so surface it the same way as storage.
+  metaPixel: META_PIXEL_ID ? 'enabled' : 'disabled'
 }));
 
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
