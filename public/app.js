@@ -122,6 +122,17 @@ document.getElementById('leadForm').addEventListener('submit', async (e) => {
       const data = await post('/api/reserve', fields);
       if (data.mode === 'stripe' && data.url) { location.href = data.url; return; }
       status.textContent = data.message; submit.textContent = 'Interest recorded';
+      // Intent-only mode: without Stripe there is no redirect and no Purchase
+      // will ever follow, so this submission would otherwise reach Meta as
+      // nothing at all. The visitor named a product and handed over an email,
+      // which is the strongest signal available until checkout is live. Once
+      // STRIPE_SECRET_KEY is set, the branch above returns first and this stops
+      // firing on its own - no code change needed to switch over.
+      track('Lead', {
+        content_ids: fields.product ? [fields.product] : [],
+        content_name: PRODUCTS[fields.product]?.name || '',
+        content_category: 'reservation_intent'
+      });
     } else {
       const data = await post('/api/waitlist', { ...fields, intent: 'waitlist' });
       status.textContent = data.message; submit.textContent = 'You’re on the list';
