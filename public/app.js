@@ -1,25 +1,25 @@
 const PRODUCTS = {
   reserve: {
     name: 'The Reserve', price: '$149', tag: 'For moments worth opening.',
-    occasion: 'CELEBRATION · ANNIVERSARY · CLIENT', image: '/assets/the-reserve.png',
+    occasion: 'CELEBRATION · ANNIVERSARY · CLIENT', image: '/assets/the-reserve.jpg',
     description: 'A ceremonial wine presentation built around the reveal: premium bottle, black wine tools, personal message, and precision-cut black EVA foam.',
     contents: ['Premium wine selection', 'Black corkscrew', 'Black + silver bottle stopper', 'Personalized message card']
   },
   contract: {
     name: 'The Contract', price: '$129', tag: 'An agreement is only as strong as its signature.',
-    occasion: 'COUPLES · ROMANCE · NOVELTY', image: '/assets/the-contract.png',
+    occasion: 'COUPLES · ROMANCE · NOVELTY', image: '/assets/the-contract.jpg',
     description: 'A playful, provocative couples gift with two engraved pens and a formal presentation folder built around the ritual of signing.',
     contents: ['“Dominant” engraved black pen', '“Submissive” engraved black pen', 'Black presentation folio', 'Personalized printed contract']
   },
   executive: {
     name: 'The Executive', price: '$159', tag: 'For the next chapter.',
-    occasion: 'PROMOTION · CLOSING · CLIENT', image: '/assets/the-executive.png',
+    occasion: 'PROMOTION · CLOSING · CLIENT', image: '/assets/the-executive.jpg',
     description: 'A restrained professional set for promotions, deal closings, graduations, new ventures, and client appreciation.',
     contents: ['Premium black metal pen', 'Black notebook', 'Black card holder', 'Personalized initials + message']
   },
   night: {
     name: 'The Night', price: '$139', tag: 'Everything else can wait.',
-    occasion: 'DATE NIGHT · ANNIVERSARY · ROMANCE', image: '/assets/the-night.png',
+    occasion: 'DATE NIGHT · ANNIVERSARY · ROMANCE', image: '/assets/the-night.jpg',
     description: 'A sensory date-night presentation that turns the box itself into the beginning of the evening.',
     contents: ['Premium black candle', 'Dark chocolate collection', 'Two glass tumblers', 'Personalized message card']
   }
