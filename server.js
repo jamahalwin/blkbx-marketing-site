@@ -29,10 +29,10 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 
 const PRODUCTS = {
-  reserve: { name: 'The Reserve', price: 14900, deposit: 1000 },
+  reserve: { name: 'The Reserve', price: 9900, deposit: 1000 },
   contract: { name: 'The Contract', price: 12900, deposit: 1000 },
   executive: { name: 'The Executive', price: 15900, deposit: 1000 },
-  night: { name: 'The Night', price: 13900, deposit: 1000 }
+  night: { name: 'The Night', price: 11900, deposit: 1000 }
 };
 
 function clean(value, max = 160) {
@@ -100,6 +100,8 @@ app.post('/api/reserve', async (req, res) => {
   const zip = clean(req.body.zip, 12);
 
   if (!product) return res.status(400).json({ ok: false, message: 'Unknown collection.' });
+  // Only The Night First Edition is currently available for paid reservations.
+  if (productKey !== 'night') return res.status(400).json({ ok: false, message: 'Reservations for this collection are not open yet.' });
   if (!validEmail(email)) return res.status(400).json({ ok: false, message: 'Enter a valid email address.' });
 
   const reservation = {
@@ -108,7 +110,7 @@ app.post('/api/reserve', async (req, res) => {
     product: productKey,
     amount: product.deposit,
     currency: 'usd',
-    status: stripe ? 'checkout_created' : 'intent_only',
+    status: stripe && process.env.RESERVATIONS_LIVE === 'true' ? 'checkout_created' : 'intent_only',
     ...context(req)
   };
 
@@ -120,7 +122,9 @@ app.post('/api/reserve', async (req, res) => {
     return res.status(500).json({ ok: false, message: 'We could not save that. Please try again.' });
   }
 
-  if (!stripe) {
+  // Do not take real payments until legal terms, tax treatment and verified
+  // webhook fulfillment are configured and explicitly enabled.
+  if (!stripe || process.env.RESERVATIONS_LIVE !== 'true') {
     return res.json({
       ok: true,
       mode: 'intent_only',
@@ -128,21 +132,15 @@ app.post('/api/reserve', async (req, res) => {
     });
   }
 
+  if (!/^price_[a-zA-Z0-9]+$/.test(process.env.STRIPE_NIGHT_RESERVATION_PRICE_ID || '')) {
+    return res.status(503).json({ ok: false, message: 'Reservations are temporarily unavailable.' });
+  }
+
   try {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       customer_email: email,
-      line_items: [{
-        price_data: {
-          currency: 'usd',
-          unit_amount: product.deposit,
-          product_data: {
-            name: `${product.name} — refundable launch reservation`,
-            description: `Holds priority access to the BLKBX private launch. Target retail $${(product.price / 100).toFixed(0)}.`
-          }
-        },
-        quantity: 1
-      }],
+      line_items: [{ price: process.env.STRIPE_NIGHT_RESERVATION_PRICE_ID, quantity: 1 }],
       metadata: { product: productKey, zip },
       success_url: `${BASE_URL}/?reserved=${productKey}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${BASE_URL}/?cancelled=${productKey}`
