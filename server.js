@@ -21,6 +21,51 @@ if (RAW_PIXEL_ID && !META_PIXEL_ID) {
 }
 
 app.disable('x-powered-by');
+
+// Stripe requires the unparsed request body to verify webhook signatures.
+// Register this route before express.json().
+app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) return res.sendStatus(503);
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body, req.get('stripe-signature'), process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (_error) {
+    return res.status(400).send('Invalid Stripe webhook signature');
+  }
+  try {
+    if (event.type === 'checkout.session.completed' ||
+        event.type === 'checkout.session.async_payment_succeeded') {
+      const session = event.data.object;
+      if (session.payment_status === 'paid' &&
+          session.metadata?.product === 'night' &&
+          session.amount_total === 1000 && session.currency === 'usd') {
+        await store.confirmReservation({
+          sessionId: session.id,
+          paymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : '',
+          email: session.customer_details?.email || session.customer_email || '',
+          amount: session.amount_total,
+          currency: session.currency,
+          product: 'night'
+        });
+      }
+    } else if (event.type === 'charge.refunded') {
+      const charge = event.data.object;
+      if (typeof charge.payment_intent === 'string') {
+        await store.refundReservation({
+          paymentIntentId: charge.payment_intent,
+          fullyRefunded: charge.amount_refunded >= charge.amount
+        });
+      }
+    }
+    return res.json({ received: true });
+  } catch (error) {
+    console.error('[stripe] webhook processing failed', error);
+    return res.sendStatus(500); // Stripe retries transient storage failures.
+  }
+});
+
 app.use(express.json({ limit: '32kb' }));
 app.use(express.urlencoded({ extended: false }));
 app.use(express.static(path.join(__dirname, 'public'), {
@@ -132,7 +177,8 @@ app.post('/api/reserve', async (req, res) => {
     });
   }
 
-  if (!/^price_[a-zA-Z0-9]+$/.test(process.env.STRIPE_NIGHT_RESERVATION_PRICE_ID || '')) {
+  if (!process.env.STRIPE_WEBHOOK_SECRET || !storageReady ||
+      !/^price_[a-zA-Z0-9]+$/.test(process.env.STRIPE_NIGHT_RESERVATION_PRICE_ID || '')) {
     return res.status(503).json({ ok: false, message: 'Reservations are temporarily unavailable.' });
   }
 
@@ -149,6 +195,24 @@ app.post('/api/reserve', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ ok: false, message: 'Checkout could not be started. Please join the launch list instead.' });
+  }
+});
+
+app.get('/api/reservation-status', async (req, res) => {
+  if (!stripe) return res.status(503).json({ ok: false });
+  const sessionId = clean(req.query.session_id, 150);
+  if (!/^cs_(test_|live_)[a-zA-Z0-9]+$/.test(sessionId)) {
+    return res.status(400).json({ ok: false });
+  }
+  try {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const paid = session.payment_status === 'paid' &&
+      session.metadata?.product === 'night' &&
+      session.amount_total === 1000 && session.currency === 'usd';
+    res.set('Cache-Control', 'no-store');
+    return res.json({ ok: true, paid });
+  } catch (_error) {
+    return res.status(404).json({ ok: false });
   }
 });
 
