@@ -1,6 +1,6 @@
 const PRODUCTS = {
   reserve: {
-    name: 'The Reserve', price: '$149', tag: 'For moments worth opening.',
+    name: 'The Reserve', price: '$99', tag: 'For moments worth opening.',
     occasion: 'CELEBRATION · ANNIVERSARY · CLIENT', image: '/assets/the-reserve.jpg',
     description: 'A ceremonial wine presentation built around the reveal: premium bottle, black wine tools, personal message, and precision-cut black EVA foam.',
     contents: ['Premium wine selection', 'Black corkscrew', 'Black + silver bottle stopper', 'Personalized message card']
@@ -18,10 +18,10 @@ const PRODUCTS = {
     contents: ['Premium black metal pen', 'Black notebook', 'Black card holder', 'Personalized initials + message']
   },
   night: {
-    name: 'The Night', price: '$139', tag: 'Everything else can wait.',
+    name: 'The Night', price: '$119', tag: 'Everything else can wait.',
     occasion: 'DATE NIGHT · ANNIVERSARY · ROMANCE', image: '/assets/the-night.jpg',
     description: 'A sensory date-night presentation that turns the box itself into the beginning of the evening.',
-    contents: ['Premium black candle', 'Dark chocolate collection', 'Two glass tumblers', 'Personalized message card']
+    contents: ['Midnight candle', 'Nine premium chocolates', 'Two BLKBX glasses', 'Preserved black rose', 'The Night branded matchbox']
   }
 };
 
@@ -70,6 +70,8 @@ function openProduct(key) {
   document.getElementById('productTag').textContent = p.tag;
   document.getElementById('productDescription').textContent = p.description;
   document.getElementById('productPrice').textContent = p.price;
+  const reserveButton = document.getElementById('reserveButton');
+  reserveButton.hidden = key !== 'night';
   document.getElementById('productContents').innerHTML = p.contents.map(x => `<li>${x}</li>`).join('');
   setOpen(productModal, true); event('view_product', key);
   // Valued at target retail, not the $10 deposit: this measures interest in the
@@ -80,6 +82,7 @@ function openProduct(key) {
   });
 }
 function openLead(product='', reserve=false) {
+  if (reserve && product !== 'night') return;
   setOpen(productModal, false); currentProduct = product;
   document.getElementById('leadProduct').value = product;
   document.getElementById('leadTitle').textContent = reserve ? `Reserve ${PRODUCTS[product]?.name || 'your BLKBX'}.` : 'Request first access.';
