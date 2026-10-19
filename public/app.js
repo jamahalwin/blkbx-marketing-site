@@ -1,6 +1,6 @@
 const PRODUCTS = {
   reserve: {
-    name: 'The Reserve', price: '$149', tag: 'For moments worth opening.',
+    name: 'The Reserve', price: '$99', tag: 'For moments worth opening.',
     occasion: 'CELEBRATION · ANNIVERSARY · CLIENT', image: '/assets/the-reserve.jpg',
     description: 'A ceremonial wine presentation built around the reveal: premium bottle, black wine tools, personal message, and precision-cut black EVA foam.',
     contents: ['Premium wine selection', 'Black corkscrew', 'Black + silver bottle stopper', 'Personalized message card']
@@ -18,10 +18,10 @@ const PRODUCTS = {
     contents: ['Premium black metal pen', 'Black notebook', 'Black card holder', 'Personalized initials + message']
   },
   night: {
-    name: 'The Night', price: '$139', tag: 'Everything else can wait.',
+    name: 'The Night', price: '$119', tag: 'Everything else can wait.',
     occasion: 'DATE NIGHT · ANNIVERSARY · ROMANCE', image: '/assets/the-night.jpg',
     description: 'A sensory date-night presentation that turns the box itself into the beginning of the evening.',
-    contents: ['Premium black candle', 'Dark chocolate collection', 'Two glass tumblers', 'Personalized message card']
+    contents: ['Midnight candle', 'Nine premium chocolates', 'Two BLKBX glasses', 'Preserved black rose', 'The Night branded matchbox']
   }
 };
 
@@ -70,6 +70,8 @@ function openProduct(key) {
   document.getElementById('productTag').textContent = p.tag;
   document.getElementById('productDescription').textContent = p.description;
   document.getElementById('productPrice').textContent = p.price;
+  const reserveButton = document.getElementById('reserveButton');
+  reserveButton.hidden = key !== 'night';
   document.getElementById('productContents').innerHTML = p.contents.map(x => `<li>${x}</li>`).join('');
   setOpen(productModal, true); event('view_product', key);
   // Valued at target retail, not the $10 deposit: this measures interest in the
@@ -80,6 +82,7 @@ function openProduct(key) {
   });
 }
 function openLead(product='', reserve=false) {
+  if (reserve && product !== 'night') return;
   setOpen(productModal, false); currentProduct = product;
   document.getElementById('leadProduct').value = product;
   document.getElementById('leadTitle').textContent = reserve ? `Reserve ${PRODUCTS[product]?.name || 'your BLKBX'}.` : 'Request first access.';
@@ -148,20 +151,24 @@ document.getElementById('leadForm').addEventListener('submit', async (e) => {
   }
 });
 
-if (qs.get('reserved')) {
-  // Stripe returns the visitor here after a completed reservation. Passing the
-  // Checkout session id as the Meta event id lets Meta discard duplicates, so a
-  // refresh, a back-navigation, or a shared success URL cannot inflate the
-  // count that the go/no-go decision rests on.
-  const reservedProduct = qs.get('reserved');
+if (qs.get('reserved') === 'night' && qs.get('session_id')) {
+  // Never count a purchase or show a confirmation solely because the browser
+  // returned with a ?reserved= query parameter.
   const sessionId = qs.get('session_id');
-  track('Purchase', {
-    content_ids: [reservedProduct], content_type: 'product',
-    content_name: PRODUCTS[reservedProduct]?.name || reservedProduct, num_items: 1,
-    value: DEPOSIT, currency: 'USD'
-  }, sessionId ? { eventID: `reserve_${sessionId}` } : undefined);
-
-  setTimeout(() => openLead('', false), 600);
-  document.getElementById('leadTitle').textContent = 'Reservation received.';
-  document.getElementById('leadIntro').textContent = 'You now have priority access to the BLKBX private launch. We will follow up before production.';
+  fetch('/api/reservation-status?session_id=' + encodeURIComponent(sessionId))
+    .then(response => response.ok ? response.json() : Promise.reject())
+    .then(result => {
+      if (!result.paid) return;
+      track('Purchase', {
+        content_ids: ['night'], content_type: 'product',
+        content_name: PRODUCTS.night.name, num_items: 1,
+        value: DEPOSIT, currency: 'USD'
+      }, { eventID: 'reserve_' + sessionId });
+      openLead('', false);
+      document.getElementById('leadTitle').textContent = 'Payment confirmed.';
+      document.getElementById('leadIntro').textContent =
+        'Your $10 refundable reservation payment was received. We will follow up before production.';
+      document.getElementById('leadForm').hidden = true;
+    })
+    .catch(() => { /* Webhook reconciliation is authoritative. */ });
 }

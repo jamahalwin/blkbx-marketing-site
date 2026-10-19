@@ -21,6 +21,54 @@ if (RAW_PIXEL_ID && !META_PIXEL_ID) {
 }
 
 app.disable('x-powered-by');
+
+// Stripe requires the unparsed request body to verify webhook signatures.
+// Register this route before express.json().
+app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) return res.sendStatus(503);
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body, req.get('stripe-signature'), process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (_error) {
+    return res.status(400).send('Invalid Stripe webhook signature');
+  }
+  try {
+    const stripeMode = event.livemode ? 'live' : 'test';
+    if (event.type === 'checkout.session.completed' ||
+        event.type === 'checkout.session.async_payment_succeeded') {
+      const session = event.data.object;
+      if (session.payment_status === 'paid' &&
+          session.metadata?.product === 'night' &&
+          session.amount_total === 1000 && session.currency === 'usd') {
+        await store.confirmReservation({
+          sessionId: session.id,
+          paymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : '',
+          email: session.customer_details?.email || session.customer_email || '',
+          amount: session.amount_total,
+          currency: session.currency,
+          product: 'night',
+          stripeMode
+        });
+      }
+    } else if (event.type === 'charge.refunded') {
+      const charge = event.data.object;
+      if (typeof charge.payment_intent === 'string') {
+        await store.refundReservation({
+          paymentIntentId: charge.payment_intent,
+          fullyRefunded: charge.amount_refunded >= charge.amount,
+          stripeMode
+        });
+      }
+    }
+    return res.json({ received: true });
+  } catch (error) {
+    console.error('[stripe] webhook processing failed', error);
+    return res.sendStatus(500); // Stripe retries transient storage failures.
+  }
+});
+
 app.use(express.json({ limit: '32kb' }));
 app.use(express.urlencoded({ extended: false }));
 app.use(express.static(path.join(__dirname, 'public'), {
@@ -29,10 +77,10 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 
 const PRODUCTS = {
-  reserve: { name: 'The Reserve', price: 14900, deposit: 1000 },
+  reserve: { name: 'The Reserve', price: 9900, deposit: 1000 },
   contract: { name: 'The Contract', price: 12900, deposit: 1000 },
   executive: { name: 'The Executive', price: 15900, deposit: 1000 },
-  night: { name: 'The Night', price: 13900, deposit: 1000 }
+  night: { name: 'The Night', price: 11900, deposit: 1000 }
 };
 
 function clean(value, max = 160) {
@@ -100,6 +148,8 @@ app.post('/api/reserve', async (req, res) => {
   const zip = clean(req.body.zip, 12);
 
   if (!product) return res.status(400).json({ ok: false, message: 'Unknown collection.' });
+  // Only The Night First Edition is currently available for paid reservations.
+  if (productKey !== 'night') return res.status(400).json({ ok: false, message: 'Reservations for this collection are not open yet.' });
   if (!validEmail(email)) return res.status(400).json({ ok: false, message: 'Enter a valid email address.' });
 
   const reservation = {
@@ -108,7 +158,7 @@ app.post('/api/reserve', async (req, res) => {
     product: productKey,
     amount: product.deposit,
     currency: 'usd',
-    status: stripe ? 'checkout_created' : 'intent_only',
+    status: stripe && process.env.RESERVATIONS_LIVE === 'true' ? 'checkout_created' : 'intent_only',
     ...context(req)
   };
 
@@ -120,7 +170,9 @@ app.post('/api/reserve', async (req, res) => {
     return res.status(500).json({ ok: false, message: 'We could not save that. Please try again.' });
   }
 
-  if (!stripe) {
+  // Do not take real payments until legal terms, tax treatment and verified
+  // webhook fulfillment are configured and explicitly enabled.
+  if (!stripe || process.env.RESERVATIONS_LIVE !== 'true') {
     return res.json({
       ok: true,
       mode: 'intent_only',
@@ -128,21 +180,16 @@ app.post('/api/reserve', async (req, res) => {
     });
   }
 
+  if (!process.env.STRIPE_WEBHOOK_SECRET || !storageReady ||
+      !/^price_[a-zA-Z0-9]+$/.test(process.env.STRIPE_NIGHT_RESERVATION_PRICE_ID || '')) {
+    return res.status(503).json({ ok: false, message: 'Reservations are temporarily unavailable.' });
+  }
+
   try {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       customer_email: email,
-      line_items: [{
-        price_data: {
-          currency: 'usd',
-          unit_amount: product.deposit,
-          product_data: {
-            name: `${product.name} — refundable launch reservation`,
-            description: `Holds priority access to the BLKBX private launch. Target retail $${(product.price / 100).toFixed(0)}.`
-          }
-        },
-        quantity: 1
-      }],
+      line_items: [{ price: process.env.STRIPE_NIGHT_RESERVATION_PRICE_ID, quantity: 1 }],
       metadata: { product: productKey, zip },
       success_url: `${BASE_URL}/?reserved=${productKey}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${BASE_URL}/?cancelled=${productKey}`
@@ -151,6 +198,24 @@ app.post('/api/reserve', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ ok: false, message: 'Checkout could not be started. Please join the launch list instead.' });
+  }
+});
+
+app.get('/api/reservation-status', async (req, res) => {
+  if (!stripe) return res.status(503).json({ ok: false });
+  const sessionId = clean(req.query.session_id, 150);
+  if (!/^cs_(test_|live_)[a-zA-Z0-9]+$/.test(sessionId)) {
+    return res.status(400).json({ ok: false });
+  }
+  try {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const paid = session.payment_status === 'paid' &&
+      session.metadata?.product === 'night' &&
+      session.amount_total === 1000 && session.currency === 'usd';
+    res.set('Cache-Control', 'no-store');
+    return res.json({ ok: true, paid });
+  } catch (_error) {
+    return res.status(404).json({ ok: false });
   }
 });
 
