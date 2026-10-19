@@ -35,6 +35,7 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
     return res.status(400).send('Invalid Stripe webhook signature');
   }
   try {
+    const stripeMode = event.livemode ? 'live' : 'test';
     if (event.type === 'checkout.session.completed' ||
         event.type === 'checkout.session.async_payment_succeeded') {
       const session = event.data.object;
@@ -47,7 +48,8 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
           email: session.customer_details?.email || session.customer_email || '',
           amount: session.amount_total,
           currency: session.currency,
-          product: 'night'
+          product: 'night',
+          stripeMode
         });
       }
     } else if (event.type === 'charge.refunded') {
@@ -55,7 +57,8 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
       if (typeof charge.payment_intent === 'string') {
         await store.refundReservation({
           paymentIntentId: charge.payment_intent,
-          fullyRefunded: charge.amount_refunded >= charge.amount
+          fullyRefunded: charge.amount_refunded >= charge.amount,
+          stripeMode
         });
       }
     }
