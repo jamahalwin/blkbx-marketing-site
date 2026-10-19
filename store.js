@@ -46,6 +46,7 @@ const PAYMENT_SCHEMA = `CREATE TABLE IF NOT EXISTS reservation_payments (
   amount INT NOT NULL,
   currency VARCHAR(8) NOT NULL,
   status VARCHAR(40) NOT NULL,
+  stripe_mode VARCHAR(8) NULL DEFAULT NULL,
   created_at DATETIME(3) NOT NULL,
   updated_at DATETIME(3) NOT NULL,
   INDEX idx_payment_intent (payment_intent_id),
@@ -116,6 +117,19 @@ const mysqlBackend = {
   async init() {
     pool = require('mysql2/promise').createPool(mysqlConfig());
     for (const statement of SCHEMA) await pool.query(statement);
+    // Preview and Publish share this database. Leave historical payment mode
+    // unknown instead of incorrectly assuming older records are live.
+    const [columns] = await pool.query(
+      "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'reservation_payments' AND COLUMN_NAME = 'stripe_mode'"
+    );
+    if (!columns.length) {
+      try {
+        await pool.query("ALTER TABLE reservation_payments ADD COLUMN stripe_mode VARCHAR(8) NULL DEFAULT NULL");
+      } catch (error) {
+        // Another app instance may have completed the same migration.
+        if (error.code !== 'ER_DUP_FIELDNAME') throw error;
+      }
+    }
   },
 
   async insert(table, payload) {
@@ -133,20 +147,20 @@ const mysqlBackend = {
   async confirmReservation(payment) {
     const now = new Date();
     await pool.query(`INSERT INTO reservation_payments
-      (session_id, payment_intent_id, email, product, amount, currency, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'paid', ?, ?)
+      (session_id, payment_intent_id, email, product, amount, currency, status, stripe_mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'paid', ?, ?, ?)
       ON DUPLICATE KEY UPDATE
-      payment_intent_id = VALUES(payment_intent_id),
-      status = IF(status IN ('refunded', 'partially_refunded'), status, 'paid'),
+      payment_intent_id = IF(stripe_mode = VALUES(stripe_mode), VALUES(payment_intent_id), payment_intent_id),
+      status = IF(stripe_mode = VALUES(stripe_mode) AND status NOT IN ('refunded', 'partially_refunded'), 'paid', status),
       updated_at = VALUES(updated_at)`,
       [payment.sessionId, payment.paymentIntentId, payment.email, payment.product,
-       payment.amount, payment.currency, now, now]);
+       payment.amount, payment.currency, payment.stripeMode, now, now]);
   },
 
-  async refundReservation({ paymentIntentId, fullyRefunded }) {
+  async refundReservation({ paymentIntentId, fullyRefunded, stripeMode }) {
     await pool.query(`UPDATE reservation_payments
-      SET status = ?, updated_at = ? WHERE payment_intent_id = ?`,
-      [fullyRefunded ? 'refunded' : 'partially_refunded', new Date(), paymentIntentId]);
+      SET status = ?, updated_at = ? WHERE payment_intent_id = ? AND stripe_mode = ?`,
+      [fullyRefunded ? 'refunded' : 'partially_refunded', new Date(), paymentIntentId, stripeMode]);
   },
 
   async metrics(productKeys) {
@@ -211,7 +225,7 @@ const jsonlBackend = {
     const rows = fs.existsSync(filename) ? fs.readFileSync(filename, 'utf8').split('\n').filter(Boolean).map(x => JSON.parse(x)) : [];
     const index = rows.findIndex(x => x.sessionId === payment.sessionId);
     if (index < 0) rows.push({ ...payment, status: 'paid' });
-    else if (!['refunded', 'partially_refunded'].includes(rows[index].status))
+    else if (rows[index].stripeMode === payment.stripeMode && !['refunded', 'partially_refunded'].includes(rows[index].status))
       rows[index] = { ...rows[index], ...payment, status: 'paid' };
     fs.writeFileSync(filename, rows.map(x => JSON.stringify(x)).join('\n') + '\n');
   },
@@ -221,7 +235,7 @@ const jsonlBackend = {
     if (!fs.existsSync(filename)) return;
     const rows = fs.readFileSync(filename, 'utf8').split('\n').filter(Boolean).map(x => JSON.parse(x));
     for (const payment of rows) {
-      if (payment.paymentIntentId === paymentIntentId)
+      if (payment.paymentIntentId === paymentIntentId && payment.stripeMode === stripeMode)
         payment.status = fullyRefunded ? 'refunded' : 'partially_refunded';
     }
     fs.writeFileSync(filename, rows.map(x => JSON.stringify(x)).join('\n') + '\n');
