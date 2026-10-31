@@ -31,13 +31,24 @@ const attribution = {
   content: qs.get('utm_content') || '', referrer: document.referrer, path: location.pathname + location.search
 };
 
+// First-party analytics (page views, funnel events, UTM/referrer attribution)
+// only run with Termly analytics consent. Termly's autoBlock does not cover
+// same-origin requests, so this is the only thing gating them.
+const analyticsAllowed = () => !!window.blkbxConsent?.has('analytics');
+
 async function post(url, body) {
-  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...attribution, ...body }) });
+  // Form submissions still go through without consent; they just carry no
+  // attribution.
+  const tracking = analyticsAllowed() ? attribution : {};
+  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...tracking, ...body }) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.message || 'Something went wrong.');
   return data;
 }
-function event(name, product='') { post('/api/event', { event: name, product }).catch(() => {}); }
+function event(name, product='') {
+  if (!analyticsAllowed()) return;
+  post('/api/event', { event: name, product }).catch(() => {});
+}
 
 // Meta Pixel. These are installed by /pixel.js and are no-ops when no pixel is
 // configured, so every call site below is safe without a guard.
@@ -50,7 +61,9 @@ const priceValue = key => Number(String(PRODUCTS[key]?.price || '').replace(/[^0
 // on the server.
 const DEPOSIT = 10;
 
-event('page_view');
+// Waits for consent, so a visitor who accepts the banner later in the visit is
+// still counted once.
+window.blkbxConsent?.whenGranted('analytics', () => event('page_view'));
 document.getElementById('year').textContent = new Date().getFullYear();
 
 const productModal = document.getElementById('productModal');
