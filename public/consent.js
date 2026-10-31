@@ -59,9 +59,8 @@
   document.addEventListener('click', function (event) {
     var link = event.target.closest && event.target.closest('[data-consent-preferences]');
     if (!link) return;
-    var t = window.Termly;
-    if (!t || typeof t.displayPreferenceModal !== 'function') return;
+    if (typeof window.displayPreferenceModal !== 'function') return;
     event.preventDefault();
-    t.displayPreferenceModal();
+    window.displayPreferenceModal();
   });
 })();
