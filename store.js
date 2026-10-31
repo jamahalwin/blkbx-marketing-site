@@ -53,7 +53,20 @@ const PAYMENT_SCHEMA = `CREATE TABLE IF NOT EXISTS reservation_payments (
   INDEX idx_reservation_email (email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
 
-const SCHEMA = [PAYMENT_SCHEMA,
+const EMAIL_SCHEMA = `CREATE TABLE IF NOT EXISTS reservation_email_outbox (
+  session_id VARCHAR(180) NOT NULL,
+  email_kind VARCHAR(24) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  attempts INT NOT NULL DEFAULT 0,
+  next_attempt_at DATETIME(3) NOT NULL,
+  lease_until DATETIME(3) NULL,
+  sent_at DATETIME(3) NULL,
+  last_error VARCHAR(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (session_id, email_kind),
+  INDEX idx_email_delivery (status, next_attempt_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
+
+const SCHEMA = [PAYMENT_SCHEMA, EMAIL_SCHEMA,
   `CREATE TABLE IF NOT EXISTS events (
      id CHAR(36) NOT NULL PRIMARY KEY,
      at DATETIME(3) NOT NULL,
@@ -155,6 +168,57 @@ const mysqlBackend = {
       updated_at = VALUES(updated_at)`,
       [payment.sessionId, payment.paymentIntentId, payment.email, payment.product,
        payment.amount, payment.currency, payment.stripeMode, now, now]);
+  },
+
+  async enqueueReservationEmails(payment) {
+    if (payment.stripeMode !== 'live' || !payment.email) return;
+    for (const kind of ['customer', 'internal']) {
+      await pool.query(`INSERT IGNORE INTO reservation_email_outbox
+        (session_id, email_kind, next_attempt_at) VALUES (?, ?, UTC_TIMESTAMP(3))`,
+        [payment.sessionId, kind]);
+    }
+  },
+
+  async claimReservationEmail() {
+    const [rows] = await pool.query(`SELECT o.session_id, o.email_kind
+      FROM reservation_email_outbox o
+      JOIN reservation_payments p ON p.session_id = o.session_id
+      WHERE p.status = 'paid' AND p.stripe_mode = 'live'
+        AND o.attempts < 8 AND o.next_attempt_at <= UTC_TIMESTAMP(3)
+        AND (o.status = 'pending' OR (o.status = 'sending' AND o.lease_until < UTC_TIMESTAMP(3)))
+      ORDER BY o.next_attempt_at LIMIT 10`);
+    for (const row of rows) {
+      const [result] = await pool.query(`UPDATE reservation_email_outbox
+        SET status = 'sending', attempts = attempts + 1,
+            lease_until = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 2 MINUTE)
+        WHERE session_id = ? AND email_kind = ?
+          AND attempts < 8 AND next_attempt_at <= UTC_TIMESTAMP(3)
+          AND (status = 'pending' OR (status = 'sending' AND lease_until < UTC_TIMESTAMP(3)))`,
+        [row.session_id, row.email_kind]);
+      if (!result.affectedRows) continue;
+      const [payments] = await pool.query(`SELECT p.session_id, p.payment_intent_id, p.email,
+        p.product, p.amount, p.currency, p.created_at, o.attempts
+        FROM reservation_payments p JOIN reservation_email_outbox o
+          ON o.session_id = p.session_id
+        WHERE p.session_id = ? AND o.email_kind = ?`, [row.session_id, row.email_kind]);
+      if (payments[0]) return { ...payments[0], kind: row.email_kind };
+    }
+    return null;
+  },
+
+  async finishReservationEmail(job, error) {
+    if (!error) {
+      await pool.query(`UPDATE reservation_email_outbox SET status = 'sent',
+        sent_at = UTC_TIMESTAMP(3), lease_until = NULL, last_error = ''
+        WHERE session_id = ? AND email_kind = ? AND status = 'sending'`,
+        [job.session_id, job.kind]);
+      return;
+    }
+    const delaySeconds = Math.min(3600, 30 * Math.pow(2, Math.min(job.attempts - 1, 7)));
+    await pool.query(`UPDATE reservation_email_outbox SET status = 'pending',
+      lease_until = NULL, next_attempt_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? SECOND),
+      last_error = ? WHERE session_id = ? AND email_kind = ? AND status = 'sending'`,
+      [delaySeconds, String(error.message || error).slice(0, 255), job.session_id, job.kind]);
   },
 
   async refundReservation({ paymentIntentId, fullyRefunded, stripeMode }) {
@@ -286,5 +350,8 @@ module.exports = {
   recordReservation: payload => backend.insert('reservations', payload),
   confirmReservation: payment => backend.confirmReservation(payment),
   refundReservation: payment => backend.refundReservation(payment),
+  enqueueReservationEmails: payment => backend.enqueueReservationEmails?.(payment),
+  claimReservationEmail: () => backend.claimReservationEmail?.(),
+  finishReservationEmail: (job, error) => backend.finishReservationEmail?.(job, error),
   metrics: productKeys => backend.metrics(productKeys)
 };
