@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const store = require('./store');
+const reservationEmail = require('./reservation-email');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -42,7 +43,7 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
       if (session.payment_status === 'paid' &&
           session.metadata?.product === 'night' &&
           session.amount_total === 1000 && session.currency === 'usd') {
-        await store.confirmReservation({
+        const paidReservation = {
           sessionId: session.id,
           paymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : '',
           email: session.customer_details?.email || session.customer_email || '',
@@ -50,7 +51,9 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
           currency: session.currency,
           product: 'night',
           stripeMode
-        });
+        };
+        await store.confirmReservation(paidReservation);
+        await store.enqueueReservationEmails(paidReservation);
       }
     } else if (event.type === 'charge.refunded') {
       const charge = event.data.object;
@@ -262,6 +265,7 @@ app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.h
 // down, but it must be visible at /health rather than silently losing signups.
 store.init().then(() => {
   storageReady = true;
+  reservationEmail.start();
 }).catch(error => {
   console.error(`[store] ${store.name} init FAILED - the site is up but recording nothing`, error);
 }).finally(() => {
