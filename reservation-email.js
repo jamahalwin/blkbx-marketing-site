@@ -23,9 +23,7 @@ function data(job) {
 }
 
 async function send(job) {
-  const sg = require('@sendgrid/mail');
-  sg.setApiKey(process.env.SENDGRID_API_KEY);
-  await sg.send({
+  const message = {
     to: job.kind === 'customer' ? job.email : 'support@blkbx.co',
     from: {
       email: process.env.SENDGRID_FROM_EMAIL,
@@ -33,9 +31,26 @@ async function send(job) {
     },
     templateId: job.kind === 'customer' ? CUSTOMER_TEMPLATE : INTERNAL_TEMPLATE,
     dynamicTemplateData: data(job),
-    // Helps avoid SendGrid delivery duplicates if the API request is retried.
     customArgs: { reservation_session: job.session_id.slice(0, 100), email_kind: job.kind }
+  };
+  const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + process.env.SENDGRID_API_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      personalizations: [{
+        to: [{ email: message.to }],
+        dynamic_template_data: message.dynamicTemplateData,
+        custom_args: message.customArgs
+      }],
+      from: message.from,
+      template_id: message.templateId
+    }),
+    signal: AbortSignal.timeout(15000)
   });
+  if (!response.ok) throw new Error('SendGrid HTTP ' + response.status);
 }
 
 async function processQueue() {
