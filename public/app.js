@@ -1,9 +1,9 @@
 const PRODUCTS = {
   reserve: {
-    name: 'The Reserve', price: '$99', tag: 'For moments worth opening.',
+    name: 'The Reserve', price: 'Price to be announced', tag: 'For moments worth opening.',
     occasion: 'CELEBRATION · ANNIVERSARY · CLIENT', image: '/assets/the-reserve.jpg',
-    description: 'A ceremonial wine presentation built around the reveal: premium bottle, black wine tools, personal message, and precision-cut black EVA foam.',
-    contents: ['Premium wine selection', 'Black corkscrew', 'Black + silver bottle stopper', 'Personalized message card']
+    description: 'A ceremonial presentation for a customer-supplied 750 mL wine bottle, with accessories and precision-cut black EVA foam. Wine is not included.',
+    contents: ['Customer-supplied wine bottle (not included)', 'Corkscrew', 'Two stainless steel wine stoppers', 'Personalized message card']
   },
   contract: {
     name: 'The Contract', price: '$129', tag: 'An agreement is only as strong as its signature.',
@@ -21,7 +21,7 @@ const PRODUCTS = {
     name: 'The Night', price: '$119', tag: 'Everything else can wait.',
     occasion: 'DATE NIGHT · ANNIVERSARY · ROMANCE', image: '/assets/the-night.jpg',
     description: 'A sensory date-night presentation that turns the box itself into the beginning of the evening.',
-    contents: ['Midnight candle', 'Nine premium chocolates', 'Two BLKBX glasses', 'Preserved black rose', 'The Night branded matchbox']
+    contents: ['THE NIGHT candle', 'Nine chocolates', 'Two BLKBX glasses', 'Black rose', 'THE NIGHT branded matchbox']
   }
 };
 
@@ -185,3 +185,7 @@ if (qs.get('reserved') === 'night' && qs.get('session_id')) {
     })
     .catch(() => { /* Webhook reconciliation is authoritative. */ });
 }
+
+// Editorial storefront calls to action reuse the existing reservation and waitlist flows.
+document.querySelectorAll('[data-reserve-night]').forEach(el => el.addEventListener('click', () => openLead('night', true)));
+document.querySelectorAll('[data-join-product]').forEach(el => el.addEventListener('click', () => openLead(el.dataset.joinProduct, false)));
