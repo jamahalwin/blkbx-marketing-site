@@ -259,6 +259,9 @@ app.get('/health', (_req, res) => res.json({
   metaPixel: META_PIXEL_ID ? 'enabled' : 'disabled'
 }));
 
+// Serve the approved return policy at its extensionless public URL.
+app.get('/return-policy', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'return-policy.html')));
+
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 // Start the listener either way: a storage outage should not take the site
