@@ -10,11 +10,15 @@ let running = false;
 function data(job) {
   const date = new Date(job.created_at);
   const dateText = Number.isNaN(date.getTime()) ? '' :
-    date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
+    new Intl.DateTimeFormat('en-US', {
+      year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+      timeZone: 'America/Chicago', timeZoneName: 'short'
+    }).format(date);
   return {
     product_name: 'THE NIGHT',
     customer_email: job.email,
-    reservation_id: job.session_id,
+    reservation_id: 'BLKBX-' + String(job.reservation_number).padStart(6, '0'),
     payment_date: dateText,
     reservation_amount: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(job.amount / 100),
     stripe_session_id: job.session_id,
