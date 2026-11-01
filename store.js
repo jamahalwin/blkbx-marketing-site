@@ -66,7 +66,12 @@ const EMAIL_SCHEMA = `CREATE TABLE IF NOT EXISTS reservation_email_outbox (
   INDEX idx_email_delivery (status, next_attempt_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
 
-const SCHEMA = [PAYMENT_SCHEMA, EMAIL_SCHEMA,
+const REFERENCE_SCHEMA = `CREATE TABLE IF NOT EXISTS reservation_references (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  session_id VARCHAR(180) NOT NULL UNIQUE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
+
+const SCHEMA = [PAYMENT_SCHEMA, EMAIL_SCHEMA, REFERENCE_SCHEMA,
   `CREATE TABLE IF NOT EXISTS events (
      id CHAR(36) NOT NULL PRIMARY KEY,
      at DATETIME(3) NOT NULL,
@@ -170,8 +175,14 @@ const mysqlBackend = {
        payment.amount, payment.currency, payment.stripeMode, now, now]);
   },
 
+  async ensureReservationReference(sessionId) {
+    await pool.query(`INSERT INTO reservation_references (session_id)
+      VALUES (?) ON DUPLICATE KEY UPDATE session_id = VALUES(session_id)`, [sessionId]);
+  },
+
   async enqueueReservationEmails(payment) {
     if (payment.stripeMode !== 'live' || !payment.email) return;
+    await this.ensureReservationReference(payment.sessionId);
     for (const kind of ['customer', 'internal']) {
       await pool.query(`INSERT IGNORE INTO reservation_email_outbox
         (session_id, email_kind, next_attempt_at) VALUES (?, ?, UTC_TIMESTAMP(3))`,
@@ -197,9 +208,10 @@ const mysqlBackend = {
         [row.session_id, row.email_kind]);
       if (!result.affectedRows) continue;
       const [payments] = await pool.query(`SELECT p.session_id, p.payment_intent_id, p.email,
-        p.product, p.amount, p.currency, p.created_at, o.attempts
+        p.product, p.amount, p.currency, p.created_at, r.id AS reservation_number, o.attempts
         FROM reservation_payments p JOIN reservation_email_outbox o
           ON o.session_id = p.session_id
+        JOIN reservation_references r ON r.session_id = p.session_id
         WHERE p.session_id = ? AND o.email_kind = ?`, [row.session_id, row.email_kind]);
       if (payments[0]) return { ...payments[0], kind: row.email_kind };
     }
